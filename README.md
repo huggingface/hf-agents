@@ -1,6 +1,6 @@
-# hf-agents
+# hf-agents : `hf` CLI extension to detect the best model/quant for a user's hardware and then spins up a local coding agent
 
-HF CLI extension that bridges [llmfit](https://github.com/Mozilla-Ocho/llmfit) hardware detection with [Pi](https://github.com/plandex-ai/pi) coding agent via a local [llama.cpp](https://github.com/ggml-org/llama.cpp) server.
+hf-agents is a HF CLI extension that uses [llmfit](https://github.com/Mozilla-Ocho/llmfit) to detect the user's hardware and recommend models they can actually run, then spins up a local [llama.cpp](https://github.com/ggml-org/llama.cpp) server with the most suited model and launches a coding agent with [Pi](https://github.com/plandex-ai/pi).
 
 Go from "what can my machine run?" to "running a local coding agent" in one command.
 
