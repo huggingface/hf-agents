@@ -1,0 +1,349 @@
+#!/usr/bin/env bash
+# hf-agents — bridge llmfit hardware detection and Pi coding agent via llama.cpp
+set -euo pipefail
+
+VERSION="0.1.0"
+PORT="${LLAMA_SERVER_PORT:-8080}"
+LLAMA_LOG="/tmp/hf-agents-llama-server.log"
+PI_MODELS_DIR="$HOME/.pi/agent"
+PI_MODELS_JSON="$PI_MODELS_DIR/models.json"
+PI_MODELS_BACKUP="$PI_MODELS_JSON.hf-agents-bak"
+
+# Track what we started so cleanup knows what to tear down
+LLAMA_PID=""
+STARTED_SERVER=false
+MODIFIED_PI_CONFIG=false
+
+cleanup() {
+    # Restore Pi config
+    if $MODIFIED_PI_CONFIG; then
+        if [[ -f "$PI_MODELS_BACKUP" ]]; then
+            mv "$PI_MODELS_BACKUP" "$PI_MODELS_JSON"
+        else
+            rm -f "$PI_MODELS_JSON"
+        fi
+    fi
+
+    # Kill llama-server only if we started it
+    if $STARTED_SERVER && [[ -n "$LLAMA_PID" ]]; then
+        kill "$LLAMA_PID" 2>/dev/null || true
+        wait "$LLAMA_PID" 2>/dev/null || true
+    fi
+}
+
+die() { echo "Error: $*" >&2; exit 1; }
+
+# Format bytes to human-readable (e.g. 1073741824 → 1.0G)
+human_bytes() {
+    awk -v b="$1" 'BEGIN {
+        if (b >= 1073741824) printf "%.1fG", b/1073741824
+        else if (b >= 1048576) printf "%.0fM", b/1048576
+        else if (b >= 1024)    printf "%.0fK", b/1024
+        else                   printf "%dB", b
+    }'
+}
+
+# Get file size in bytes (portable across macOS and Linux)
+file_bytes() {
+    wc -c < "$1" 2>/dev/null | tr -d ' '
+}
+
+usage() {
+    cat <<EOF
+hf-agents $VERSION — local coding agents powered by llmfit + llama.cpp
+
+Usage:
+  hf-agents fit [args...]       Hardware detection & model recommendations (llmfit passthrough)
+  hf-agents run pi [model] [args...]  Select a model (or specify one), start llama-server, launch Pi
+  hf-agents --help              Show this help
+  hf-agents --version           Show version
+
+Environment:
+  LLAMA_SERVER_PORT   Port for llama-server (default: 8080)
+  HF_TOKEN            Hugging Face token for gated model downloads
+
+Examples:
+  hf-agents fit recommend -n 5       # top 5 models for your hardware
+  hf-agents fit system               # show detected hardware
+  hf-agents run pi                                        # interactive model pick → coding agent
+  hf-agents run pi unsloth/Qwen3-Coder-Next-GGUF:q4_k_m   # specify a model directly
+  hf-agents run pi --print "hello"                         # non-interactive mode
+EOF
+}
+
+# ── Subcommand: fit (llmfit passthrough) ─────────────────────────────────────
+
+cmd_fit() {
+    command -v llmfit >/dev/null 2>&1 || die "'llmfit' is required but not found in PATH."
+    exec llmfit "$@"
+}
+
+# ── Subcommand: run pi ──────────────────────────────────────────────────────
+
+cmd_run_pi() {
+    # Parse optional model ID (first arg that doesn't start with -)
+    local hf_repo=""
+    local pi_args=()
+    if [[ $# -gt 0 ]] && [[ "$1" != -* ]]; then
+        hf_repo="$1"
+        shift
+    fi
+    pi_args=("$@")
+
+    # Step 1: Check dependencies — skip fzf/llmfit if model already specified
+    local deps=(jq curl llama-server pi)
+    if [[ -z "$hf_repo" ]]; then
+        deps+=(fzf llmfit)
+    fi
+    for cmd in "${deps[@]}"; do
+        command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' is required but not found in PATH."
+    done
+
+    # Step 2: Check if llama-server is already running on the port
+    if curl -sf "http://localhost:$PORT/health" >/dev/null 2>&1; then
+        echo "Using existing llama-server on port $PORT."
+    elif lsof -i :"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+        die "Port $PORT is in use but not responding to health checks. Kill the existing process or use LLAMA_SERVER_PORT=<port>."
+    else
+        # Step 3 & 4: Get model — either from arg or interactive selection
+        if [[ -z "$hf_repo" ]]; then
+            echo "Detecting hardware and fetching model recommendations..."
+            local recommend_json
+            recommend_json="$(llmfit recommend --json -n 20)" || die "llmfit recommend failed."
+
+            # Filter to models with GGUF sources
+            local gguf_models
+            gguf_models="$(echo "$recommend_json" | jq -r '
+                [.models[] | select(.gguf_sources | length > 0)]
+            ')"
+
+            local count
+            count="$(echo "$gguf_models" | jq 'length')"
+            [[ "$count" -gt 0 ]] || die "No GGUF-compatible models found for your hardware."
+
+            # User selects model via fzf
+            # Build lines: repo:quant \t display_string
+            local fzf_input
+            fzf_input="$(echo "$gguf_models" | jq -r '
+                .[] |
+                .gguf_sources[0].repo as $repo |
+                .best_quant as $quant |
+                "\($repo):\($quant)\t\(.name)\t\(.parameter_count)\t\(.estimated_tps) tok/s\tscore: \(.score)"
+            ')"
+
+            local selection
+            selection="$(echo "$fzf_input" | fzf \
+                --prompt="Model: " \
+                --height=50% \
+                --reverse \
+                --delimiter=$'\t' \
+                --with-nth=2.. \
+                --header="Select a model for Pi (name | params | speed | score)")" \
+                || die "No model selected."
+
+            hf_repo="$(echo "$selection" | cut -f1)"
+            local model_name
+            model_name="$(echo "$selection" | cut -f2)"
+            echo "Selected: $model_name ($hf_repo)"
+        else
+            echo "Using model: $hf_repo"
+        fi
+
+        # Step 5: Start llama-server in background
+        trap cleanup EXIT INT TERM
+        STARTED_SERVER=true
+
+        echo "Starting llama-server on port $PORT..."
+        llama-server -hf "$hf_repo" --jinja --port "$PORT" > "$LLAMA_LOG" 2>&1 &
+        LLAMA_PID=$!
+
+        # Health-check loop with progress indicator
+        # 600s timeout to allow for first-run model downloads
+        local timeout=600
+        local elapsed=0
+        local spinner=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+        local spin_i=0
+        local status_msg="starting"
+        local dl_file=""
+        local dl_total_bytes=""
+        local dl_total_human=""
+
+        while [[ $elapsed -lt $timeout ]]; do
+            # Check if process is still alive
+            if ! kill -0 "$LLAMA_PID" 2>/dev/null; then
+                printf "\r\033[K" >&2
+                echo "llama-server exited unexpectedly. Last 20 lines of log:" >&2
+                tail -20 "$LLAMA_LOG" >&2
+                exit 1
+            fi
+
+            if curl -sf "http://localhost:$PORT/health" >/dev/null 2>&1; then
+                printf "\r\033[K"
+                echo "llama-server is ready."
+                break
+            fi
+
+            # Detect what llama-server is doing from the log
+            # Run in a subshell to prevent grep failures from tripping set -e
+            status_msg="$(
+                set +e
+                log="$LLAMA_LOG"
+                if grep -q "warming up" "$log" 2>/dev/null; then
+                    echo "warming up"
+                elif grep -q "load_tensors:" "$log" 2>/dev/null; then
+                    offload="$(grep -o 'offloaded [0-9]*/[0-9]* layers' "$log" 2>/dev/null | tail -1)"
+                    if [[ -n "$offload" ]]; then
+                        echo "loading model ($offload)"
+                    else
+                        echo "loading model tensors"
+                    fi
+                elif grep -q "loading model\|srv.*load_model" "$log" 2>/dev/null; then
+                    echo "loading model"
+                elif grep -q "downloadInProgress" "$log" 2>/dev/null; then
+                    echo "downloading"
+                else
+                    echo ""
+                fi
+            )" || true
+
+            # Handle download progress separately (needs to update outer variables)
+            if [[ "$status_msg" == "downloading" ]] || { [[ "$status_msg" == "starting" ]] && grep -q "downloadInProgress" "$LLAMA_LOG" 2>/dev/null; }; then
+                # Get download file path (once)
+                if [[ -z "$dl_file" ]]; then
+                    dl_file="$(grep -o '/[^ ]*\.downloadInProgress' "$LLAMA_LOG" 2>/dev/null | tail -1 || true)"
+                    # Get total size via HEAD on the download URL (once)
+                    local dl_url
+                    dl_url="$(grep -o 'https://[^ ]*\.gguf' "$LLAMA_LOG" 2>/dev/null | tail -1 || true)"
+                    if [[ -n "$dl_url" ]]; then
+                        local head_args=(-sfLI)
+                        local hf_token="${HF_TOKEN:-$(hf auth token 2>/dev/null || true)}"
+                        if [[ -n "$hf_token" ]]; then
+                            head_args+=(-H "Authorization: Bearer $hf_token")
+                        fi
+                        local content_length
+                        content_length="$(curl "${head_args[@]}" "$dl_url" 2>/dev/null \
+                            | grep -i content-length | tail -1 | awk '{print $2}' | tr -d '\r' || true)"
+                        if [[ -n "$content_length" ]] && [[ "$content_length" -gt 0 ]] 2>/dev/null; then
+                            dl_total_bytes="$content_length"
+                            dl_total_human="$(human_bytes "$dl_total_bytes")"
+                        fi
+                    fi
+                fi
+                # Show current / total
+                if [[ -n "$dl_file" ]] && [[ -f "$dl_file" ]]; then
+                    local dl_cur_bytes
+                    dl_cur_bytes="$(file_bytes "$dl_file" || echo 0)"
+                    local dl_cur_human
+                    dl_cur_human="$(human_bytes "$dl_cur_bytes")"
+                    if [[ -n "$dl_total_human" ]]; then
+                        local pct=$((dl_cur_bytes * 100 / dl_total_bytes))
+                        status_msg="downloading model ${dl_cur_human}/${dl_total_human} (${pct}%)"
+                    else
+                        status_msg="downloading model (${dl_cur_human})"
+                    fi
+                else
+                    status_msg="downloading model"
+                fi
+            fi
+
+            # Keep previous status if detection returned empty
+            [[ -z "$status_msg" ]] && status_msg="starting"
+
+            local mins=$((elapsed / 60))
+            local secs=$((elapsed % 60))
+            local time_str
+            if [[ $mins -gt 0 ]]; then
+                time_str="${mins}m${secs}s"
+            else
+                time_str="${secs}s"
+            fi
+
+            printf "\r\033[K  %s %s (%s)" "${spinner[$spin_i]}" "$status_msg" "$time_str"
+            spin_i=$(( (spin_i + 1) % ${#spinner[@]} ))
+
+            sleep 2
+            elapsed=$((elapsed + 2))
+        done
+
+        if [[ $elapsed -ge $timeout ]]; then
+            printf "\r\033[K"
+            die "llama-server failed to start within $((timeout / 60))m. Check $LLAMA_LOG"
+        fi
+    fi
+
+    # Step 6: Configure Pi
+    # Register cleanup trap (might already be set if we started the server)
+    if ! $STARTED_SERVER; then
+        trap cleanup EXIT INT TERM
+    fi
+    MODIFIED_PI_CONFIG=true
+
+    mkdir -p "$PI_MODELS_DIR"
+
+    # Back up existing models.json (only if backup doesn't already exist)
+    if [[ -f "$PI_MODELS_JSON" ]] && [[ ! -f "$PI_MODELS_BACKUP" ]]; then
+        cp "$PI_MODELS_JSON" "$PI_MODELS_BACKUP"
+    fi
+
+    # Get the model ID from the running server
+    local model_id
+    model_id="$(curl -sf "http://localhost:$PORT/v1/models" \
+        | jq -r '.data[0].id // empty')" || true
+
+    if [[ -z "$model_id" ]]; then
+        model_id="local-model"
+    fi
+
+    cat > "$PI_MODELS_JSON" <<PIEOF
+{
+  "providers": {
+    "llama-cpp": {
+      "baseUrl": "http://localhost:$PORT/v1",
+      "api": "openai-completions",
+      "apiKey": "none",
+      "models": [
+        {
+          "id": "$model_id"
+        }
+      ]
+    }
+  }
+}
+PIEOF
+
+    echo "Pi configured to use local llama-server (model: $model_id)."
+
+    # Step 7: Launch Pi
+    pi --provider llama-cpp --model "$model_id" "${pi_args[@]+"${pi_args[@]}"}"
+}
+
+# ── Main routing ─────────────────────────────────────────────────────────────
+
+case "${1:-}" in
+    fit)
+        shift
+        cmd_fit "$@"
+        ;;
+    run)
+        shift
+        case "${1:-}" in
+            pi)
+                shift
+                cmd_run_pi "$@"
+                ;;
+            *)
+                die "Unknown target: '${1:-}'. Currently supported: hf-agents run pi"
+                ;;
+        esac
+        ;;
+    --help|-h)
+        usage
+        ;;
+    --version|-v)
+        echo "hf-agents $VERSION"
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+esac
