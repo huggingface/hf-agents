@@ -33,7 +33,9 @@ cleanup() {
 
 die() { echo "Error: $*" >&2; exit 1; }
 
-# Ensure Homebrew is installed (macOS + Linux)
+is_macos() { [[ "$(uname -s)" == "Darwin" ]]; }
+
+# Ensure Homebrew is installed (macOS only)
 ensure_brew() {
     command -v brew >/dev/null 2>&1 && return
     echo "Homebrew not found. Installing..."
@@ -44,42 +46,83 @@ ensure_brew() {
         eval "$(/opt/homebrew/bin/brew shellenv)"
     elif [[ -x /usr/local/bin/brew ]]; then
         eval "$(/usr/local/bin/brew shellenv)"
-    elif [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
-        eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
     fi
     command -v brew >/dev/null 2>&1 || die "Homebrew installed but 'brew' not found in PATH."
+}
+
+# Generate an install hint for a missing package (Linux)
+linux_install_hint() {
+    local pkg="$1"
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "  sudo apt-get install $pkg"
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "  sudo dnf install $pkg"
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "  sudo pacman -S $pkg"
+    elif command -v zypper >/dev/null 2>&1; then
+        echo "  sudo zypper install $pkg"
+    elif command -v apk >/dev/null 2>&1; then
+        echo "  sudo apk add $pkg"
+    else
+        echo "  Install '$pkg' using your distribution's package manager."
+    fi
 }
 
 # Ensure a dependency is available, installing it if missing
 ensure_dep() {
     local cmd="$1"
     command -v "$cmd" >/dev/null 2>&1 && return
-    echo "'$cmd' not found. Installing..."
-    case "$cmd" in
-        curl)
-            die "'curl' is required but not found in PATH. Please install it manually." ;;
-        jq|fzf)
-            ensure_brew
-            brew install "$cmd" || die "Failed to install '$cmd' via Homebrew." ;;
-        llmfit)
-            curl -fsSL https://llmfit.axjns.dev/install.sh | sh \
-                || die "Failed to install llmfit." ;;
-        llama-server)
-            ensure_brew
-            brew install llama.cpp || die "Failed to install llama.cpp via Homebrew." ;;
-        npm)
-            ensure_brew
-            brew install node || die "Failed to install node via Homebrew." ;;
-        *)
-            die "'$cmd' is required but not found in PATH." ;;
-    esac
+
+    if is_macos; then
+        echo "'$cmd' not found. Installing..."
+        case "$cmd" in
+            curl)
+                die "'curl' is required but not found in PATH. Please install it manually." ;;
+            jq|fzf)
+                ensure_brew
+                brew install "$cmd" || die "Failed to install '$cmd' via Homebrew." ;;
+            llmfit)
+                curl -fsSL https://llmfit.axjns.dev/install.sh | sh \
+                    || die "Failed to install llmfit." ;;
+            llama-server)
+                ensure_brew
+                brew install llama.cpp || die "Failed to install llama.cpp via Homebrew." ;;
+            npm)
+                ensure_brew
+                brew install node || die "Failed to install node via Homebrew." ;;
+            *)
+                die "'$cmd' is required but not found in PATH." ;;
+        esac
+    else
+        # Linux: don't auto-install system packages — tell the user what's needed
+        case "$cmd" in
+            curl)
+                die "'curl' is required. Please install it:
+$(linux_install_hint curl)" ;;
+            jq|fzf)
+                die "'$cmd' is required. Please install it:
+$(linux_install_hint "$cmd")" ;;
+            llmfit)
+                echo "'llmfit' not found. Installing..."
+                curl -fsSL https://llmfit.axjns.dev/install.sh | sh \
+                    || die "Failed to install llmfit." ;;
+            llama-server)
+                die "'llama-server' is required. Please install llama.cpp:
+  https://github.com/ggml-org/llama.cpp/blob/master/docs/install.md" ;;
+            npm)
+                die "'npm' is required. Please install Node.js:
+$(linux_install_hint nodejs)" ;;
+            *)
+                die "'$cmd' is required but not found in PATH." ;;
+        esac
+    fi
     command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' installed but not found in PATH."
 }
 
 # Ensure common tool paths are in PATH (hf extensions may not inherit full shell env)
 ensure_path() {
     local dir
-    for dir in /opt/homebrew/bin /usr/local/bin /home/linuxbrew/.linuxbrew/bin; do
+    for dir in /opt/homebrew/bin /usr/local/bin; do
         if [[ -d "$dir" ]] && [[ ":$PATH:" != *":$dir:"* ]]; then
             export PATH="$dir:$PATH"
         fi
