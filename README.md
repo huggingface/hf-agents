@@ -15,7 +15,7 @@ Go from "what can my machine run?" to "running a local coding agent" in one comm
 ## Installation
 
 ```bash
-hf extension install hf-agents
+hf extensions install hf-agents
 ```
 
 ## Usage
