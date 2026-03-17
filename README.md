@@ -5,11 +5,10 @@ hf-agents is a HF CLI extension that uses [llmfit](https://github.com/Mozilla-Oc
 Go from "what can my machine run?" to "running a local coding agent" in one command.
 
 ## Requirements & References
-
+- How to create a HF CLI extension guide: https://huggingface.co/docs/huggingface_hub/en/guides/cli-extensions
 - [llmfit](https://github.com/AlexsJones/llmfit) : hardware detection & model recommendations
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) : `llama-server` for local inference
 - [Pi](https://github.com/plandex-ai/pi) : coding agent
-- [huggingface_hub](https://github.com/huggingface/huggingface_hub) : CLI (`hf`)
 - `jq`, `fzf`, `curl`
 
 ## Installation
