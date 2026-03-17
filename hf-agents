@@ -76,8 +76,21 @@ ensure_dep() {
     command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' installed but not found in PATH."
 }
 
+# Ensure common tool paths are in PATH (hf extensions may not inherit full shell env)
+ensure_path() {
+    local dir
+    for dir in /opt/homebrew/bin /usr/local/bin /home/linuxbrew/.linuxbrew/bin; do
+        [[ -d "$dir" ]] && [[ ":$PATH:" != *":$dir:"* ]] && export PATH="$dir:$PATH"
+    done
+    # Also add npm global bin if node is available
+    local npm_bin
+    npm_bin="$(npm -g bin 2>/dev/null || true)"
+    [[ -n "$npm_bin" ]] && [[ -d "$npm_bin" ]] && [[ ":$PATH:" != *":$npm_bin:"* ]] && export PATH="$npm_bin:$PATH"
+}
+
 # Ensure Pi is installed and up-to-date
 ensure_pi() {
+    ensure_path
     if command -v pi >/dev/null 2>&1; then
         echo "Updating Pi..."
         pi update 2>/dev/null || echo "Pi update check done."
@@ -85,6 +98,7 @@ ensure_pi() {
         echo "Pi not found. Installing..."
         ensure_dep npm
         npm install -g @mariozechner/pi-coding-agent || die "Failed to install Pi."
+        ensure_path
         command -v pi >/dev/null 2>&1 || die "Pi installed but 'pi' not found in PATH. Check your npm global bin directory."
         echo "Pi installed successfully."
     fi
@@ -389,10 +403,17 @@ cmd_run_pi() {
                 time_str="${secs}s"
             fi
 
-            printf "\r\033[K  %s %s (%s)" "${spinner[$spin_i]}" "$status_msg" "$time_str"
+            printf "\r\033[K  %s %s (%s) — press Esc to cancel" "${spinner[$spin_i]}" "$status_msg" "$time_str"
             spin_i=$(( (spin_i + 1) % ${#spinner[@]} ))
 
-            sleep 2
+            # Read keypress with timeout (detect Esc to cancel)
+            local key=""
+            read -rsn1 -t 2 key || true
+            if [[ "$key" == $'\x1b' ]]; then
+                printf "\r\033[K"
+                echo "Cancelled."
+                exit 1
+            fi
             elapsed=$((elapsed + 2))
         done
 
