@@ -11,7 +11,7 @@
       "curl",
       "llmfit",
       "llama-server",
-      "pi"
+      "npm"
     ],
     "env": {
       "LLAMA_SERVER_PORT": "Port for llama-server (default: 8080)",

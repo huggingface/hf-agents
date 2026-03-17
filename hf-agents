@@ -33,6 +33,63 @@ cleanup() {
 
 die() { echo "Error: $*" >&2; exit 1; }
 
+# Ensure Homebrew is installed (macOS + Linux)
+ensure_brew() {
+    command -v brew >/dev/null 2>&1 && return
+    echo "Homebrew not found. Installing..."
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+        || die "Failed to install Homebrew."
+    # Add brew to PATH for this session
+    if [[ -x /opt/homebrew/bin/brew ]]; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [[ -x /usr/local/bin/brew ]]; then
+        eval "$(/usr/local/bin/brew shellenv)"
+    elif [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
+        eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+    fi
+    command -v brew >/dev/null 2>&1 || die "Homebrew installed but 'brew' not found in PATH."
+}
+
+# Ensure a dependency is available, installing it if missing
+ensure_dep() {
+    local cmd="$1"
+    command -v "$cmd" >/dev/null 2>&1 && return
+    echo "'$cmd' not found. Installing..."
+    case "$cmd" in
+        curl)
+            die "'curl' is required but not found in PATH. Please install it manually." ;;
+        jq|fzf)
+            ensure_brew
+            brew install "$cmd" || die "Failed to install '$cmd' via Homebrew." ;;
+        llmfit)
+            curl -fsSL https://llmfit.axjns.dev/install.sh | sh \
+                || die "Failed to install llmfit." ;;
+        llama-server)
+            ensure_brew
+            brew install llama.cpp || die "Failed to install llama.cpp via Homebrew." ;;
+        npm)
+            ensure_brew
+            brew install node || die "Failed to install node via Homebrew." ;;
+        *)
+            die "'$cmd' is required but not found in PATH." ;;
+    esac
+    command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' installed but not found in PATH."
+}
+
+# Ensure Pi is installed and up-to-date
+ensure_pi() {
+    if command -v pi >/dev/null 2>&1; then
+        echo "Updating Pi..."
+        pi update 2>/dev/null || echo "Pi update check done."
+    else
+        echo "Pi not found. Installing..."
+        ensure_dep npm
+        npm install -g @mariozechner/pi-coding-agent || die "Failed to install Pi."
+        command -v pi >/dev/null 2>&1 || die "Pi installed but 'pi' not found in PATH. Check your npm global bin directory."
+        echo "Pi installed successfully."
+    fi
+}
+
 # Format bytes to human-readable (e.g. 1073741824 → 1.0G)
 human_bytes() {
     awk -v b="$1" 'BEGIN {
@@ -52,52 +109,80 @@ usage() {
     cat <<EOF
 hf-agents $VERSION — local coding agents powered by llmfit + llama.cpp
 
+Install:
+  hf extensions install hf-agents
+
 Usage:
-  hf-agents fit [args...]       Hardware detection & model recommendations (llmfit passthrough)
-  hf-agents run pi [model] [args...]  Select a model (or specify one), start llama-server, launch Pi
-  hf-agents --help              Show this help
-  hf-agents --version           Show version
+  hf agents fit [args...]                    Hardware detection & model recommendations (llmfit passthrough)
+  hf agents run pi [model] [--top N] [args...]  Start llama-server and launch Pi coding agent
+  hf agents --help                           Show this help
+  hf agents --version                        Show version
 
 Environment:
   LLAMA_SERVER_PORT   Port for llama-server (default: 8080)
   HF_TOKEN            Hugging Face token for gated model downloads
 
 Examples:
-  hf-agents fit recommend -n 5       # top 5 models for your hardware
-  hf-agents fit system               # show detected hardware
-  hf-agents run pi                                        # interactive model pick → coding agent
-  hf-agents run pi unsloth/Qwen3-Coder-Next-GGUF:q4_k_m   # specify a model directly
-  hf-agents run pi --print "hello"                         # non-interactive mode
+  hf agents fit recommend -n 5       # top 5 models for your hardware
+  hf agents fit system               # show detected hardware
+  hf agents run pi                                        # auto-pick best model for your hardware
+  hf agents run pi --top 5                                # pick from top 5 recommended models
+  hf agents run pi unsloth/Qwen3-Coder-Next-GGUF:q4_k_m   # specify a model directly
+  hf agents run pi --print "hello"                         # non-interactive mode
 EOF
 }
 
 # ── Subcommand: fit (llmfit passthrough) ─────────────────────────────────────
 
 cmd_fit() {
-    command -v llmfit >/dev/null 2>&1 || die "'llmfit' is required but not found in PATH."
+    ensure_dep llmfit
     exec llmfit "$@"
 }
 
 # ── Subcommand: run pi ──────────────────────────────────────────────────────
 
 cmd_run_pi() {
-    # Parse optional model ID (first arg that doesn't start with -)
+    # Parse optional model ID and --top N flag
     local hf_repo=""
+    local top_n=0
     local pi_args=()
-    if [[ $# -gt 0 ]] && [[ "$1" != -* ]]; then
-        hf_repo="$1"
-        shift
-    fi
-    pi_args=("$@")
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --top)
+                [[ $# -ge 2 ]] || die "--top requires a number argument"
+                top_n="$2"
+                [[ "$top_n" =~ ^[1-9][0-9]*$ ]] || die "--top must be a positive integer"
+                shift 2
+                ;;
+            -*)
+                pi_args+=("$1")
+                shift
+                ;;
+            *)
+                if [[ -z "$hf_repo" ]]; then
+                    hf_repo="$1"
+                else
+                    pi_args+=("$1")
+                fi
+                shift
+                ;;
+        esac
+    done
 
-    # Step 1: Check dependencies — skip fzf/llmfit if model already specified
-    local deps=(jq curl llama-server pi)
+    # Step 1: Ensure dependencies — curl first, skip fzf/llmfit if model specified
+    local deps=(curl jq llama-server npm)
     if [[ -z "$hf_repo" ]]; then
-        deps+=(fzf llmfit)
+        deps+=(llmfit)
+        if [[ "$top_n" -gt 0 ]]; then
+            deps+=(fzf)
+        fi
     fi
     for cmd in "${deps[@]}"; do
-        command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' is required but not found in PATH."
+        ensure_dep "$cmd"
     done
+
+    # Install or update Pi
+    ensure_pi
 
     # Step 2: Check if llama-server is already running on the port
     if curl -sf "http://localhost:$PORT/health" >/dev/null 2>&1; then
@@ -109,42 +194,88 @@ cmd_run_pi() {
         if [[ -z "$hf_repo" ]]; then
             echo "Detecting hardware and fetching model recommendations..."
             local recommend_json
-            recommend_json="$(llmfit recommend --json -n 20)" || die "llmfit recommend failed."
+            # Fetch enough candidates so GGUF filtering can fill --top N
+            # Note: --runtime llamacpp returns 0 models on Apple Silicon (llmfit
+            # prefers MLX there), so we use --runtime any and filter for gguf_sources.
+            # When best_quant is an MLX quant, we map to the GGUF equivalent
+            # (mlx-8bit→Q8_0, mlx-4bit→Q4_K_M, mlx-3bit→Q3_K_M).
+            local fetch_n=$(( top_n > 30 ? top_n * 4 : 100 ))
+            recommend_json="$(llmfit recommend --json -n "$fetch_n")" || die "llmfit recommend failed."
 
-            # Filter to models with GGUF sources
-            local gguf_models
-            gguf_models="$(echo "$recommend_json" | jq -r '
+            # Filter to GGUF models and deduplicate by model name (keep highest score)
+            local gguf_all
+            gguf_all="$(echo "$recommend_json" | jq '
                 [.models[] | select(.gguf_sources | length > 0)]
+                | group_by(.name | split("/")[1])
+                | map(sort_by(-.score)[0])
+                | sort_by(-.score)
             ')"
 
-            local count
-            count="$(echo "$gguf_models" | jq 'length')"
-            [[ "$count" -gt 0 ]] || die "No GGUF-compatible models found for your hardware."
+            if [[ "$top_n" -eq 0 ]]; then
+                # Auto-pick: take the first GGUF-compatible model
+                local best
+                best="$(echo "$gguf_all" | jq '.[0] //empty')"
+                [[ -n "$best" ]] || die "No GGUF-compatible models found for your hardware."
 
-            # User selects model via fzf
-            # Build lines: repo:quant \t display_string
-            local fzf_input
-            fzf_input="$(echo "$gguf_models" | jq -r '
-                .[] |
-                .gguf_sources[0].repo as $repo |
-                .best_quant as $quant |
-                "\($repo):\($quant)\t\(.name)\t\(.parameter_count)\t\(.estimated_tps) tok/s\tscore: \(.score)"
-            ')"
+                hf_repo="$(echo "$best" | jq -r '
+                    .gguf_sources[0].repo as $repo |
+                    (.best_quant |
+                        if test("^mlx-8bit"; "i") then "Q8_0"
+                        elif test("^mlx-4bit"; "i") then "Q4_K_M"
+                        elif test("^mlx-3bit"; "i") then "Q3_K_M"
+                        elif test("^mlx"; "i") then "Q4_K_M"
+                        else . end
+                    ) as $quant |
+                    "\($repo):\($quant)"
+                ')"
+                local model_name model_score
+                model_name="$(echo "$best" | jq -r '.name')"
+                model_score="$(echo "$best" | jq -r '.score')"
+                echo "Selected: $model_name (score: $model_score)"
+                echo "  → $hf_repo"
+            else
+                # Interactive: show top N in fzf picker
+                local gguf_models
+                gguf_models="$(echo "$gguf_all" | jq --argjson n "$top_n" '.[:$n]')"
 
-            local selection
-            selection="$(echo "$fzf_input" | fzf \
-                --prompt="Model: " \
-                --height=50% \
-                --reverse \
-                --delimiter=$'\t' \
-                --with-nth=2.. \
-                --header="Select a model for Pi (name | params | speed | score)")" \
-                || die "No model selected."
+                local count
+                count="$(echo "$gguf_models" | jq 'length')"
+                [[ "$count" -gt 0 ]] || die "No GGUF-compatible models found for your hardware."
 
-            hf_repo="$(echo "$selection" | cut -f1)"
-            local model_name
-            model_name="$(echo "$selection" | cut -f2)"
-            echo "Selected: $model_name ($hf_repo)"
+                # Build lines: repo:quant \t name \t quant \t params \t tps \t score
+                local fzf_input
+                fzf_input="$(echo "$gguf_models" | jq -r '
+                    .[] |
+                    .gguf_sources[0].repo as $repo |
+                    (.best_quant |
+                        if test("^mlx-8bit"; "i") then "Q8_0"
+                        elif test("^mlx-4bit"; "i") then "Q4_K_M"
+                        elif test("^mlx-3bit"; "i") then "Q3_K_M"
+                        elif test("^mlx"; "i") then "Q4_K_M"
+                        else . end
+                    ) as $quant |
+                    "\($repo):\($quant)\t\(.name)\t\($quant)\t\(.parameter_count)\t\(.estimated_tps) tok/s\tscore: \(.score)"
+                ' | awk -F'\t' '{
+                    printf "%s\t%-50s  %-10s  %-12s  %-12s  %s\n", $1, $2, $3, $4, $5, $6
+                }')"
+
+                local selection
+                selection="$(echo "$fzf_input" | fzf \
+                    --prompt="Model: " \
+                    --height=50% \
+                    --reverse \
+                    --delimiter=$'\t' \
+                    --with-nth=2.. \
+                    --header="$(printf '%-50s  %-10s  %-12s  %-12s  %s' 'Name' 'Quant' 'Params' 'Speed' 'Score')")" \
+                    || die "No model selected."
+
+                hf_repo="$(echo "$selection" | cut -f1)"
+                local model_name model_score
+                model_name="$(echo "$selection" | awk -F'\t' '{print $2}' | xargs)"
+                model_score="$(echo "$selection" | awk -F'\t' '{print $6}' | xargs)"
+                echo "Selected: $model_name ($model_score)"
+                echo "  → $hf_repo"
+            fi
         else
             echo "Using model: $hf_repo"
         fi
