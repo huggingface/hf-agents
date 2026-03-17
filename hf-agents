@@ -80,12 +80,10 @@ ensure_dep() {
 ensure_path() {
     local dir
     for dir in /opt/homebrew/bin /usr/local/bin /home/linuxbrew/.linuxbrew/bin; do
-        [[ -d "$dir" ]] && [[ ":$PATH:" != *":$dir:"* ]] && export PATH="$dir:$PATH"
+        if [[ -d "$dir" ]] && [[ ":$PATH:" != *":$dir:"* ]]; then
+            export PATH="$dir:$PATH"
+        fi
     done
-    # Also add npm global bin if node is available
-    local npm_bin
-    npm_bin="$(npm -g bin 2>/dev/null || true)"
-    [[ -n "$npm_bin" ]] && [[ -d "$npm_bin" ]] && [[ ":$PATH:" != *":$npm_bin:"* ]] && export PATH="$npm_bin:$PATH"
 }
 
 # Ensure Pi is installed and up-to-date
