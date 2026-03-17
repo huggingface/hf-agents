@@ -401,7 +401,7 @@ cmd_run_pi() {
                 time_str="${secs}s"
             fi
 
-            printf "\r\033[K  %s %s (%s) — press Esc to cancel" "${spinner[$spin_i]}" "$status_msg" "$time_str"
+            printf "\r\033[K  %s %s (%s)" "${spinner[$spin_i]}" "$status_msg" "$time_str"
             spin_i=$(( (spin_i + 1) % ${#spinner[@]} ))
 
             # Read keypress with timeout (detect Esc to cancel)
