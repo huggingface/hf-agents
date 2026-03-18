@@ -39,9 +39,8 @@ check_update() {
     latest="$(curl -sf --max-time 3 \
         "https://raw.githubusercontent.com/huggingface/hf-agents/main/manifest.json" \
         | jq -r '.version // empty' 2>/dev/null)" || return 0
-    if [[ -n "$latest" ]] && \
-       [[ "$(printf '%s\n%s\n' "$VERSION" "$latest" | sort -V | tail -n1)" == "$VERSION" ]] && \
-       [[ "$VERSION" != "$latest" ]]; then
+    if [[ -n "$latest" ]] && [[ "$VERSION" != "$latest" ]] && \
+       [[ "$(printf '%s\n%s\n' "$VERSION" "$latest" | sort -V | head -n1)" == "$VERSION" ]]; then
         echo "A new version of hf-agents is available: $latest (current: $VERSION)"
         echo "  Update with: hf extensions install hf-agents"
         echo ""
