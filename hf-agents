@@ -2,7 +2,7 @@
 # hf-agents — bridge llmfit hardware detection and Pi coding agent via llama.cpp
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 PORT="${LLAMA_SERVER_PORT:-8080}"
 LLAMA_LOG="/tmp/hf-agents-llama-server.log"
 PI_MODELS_DIR="$HOME/.pi/agent"
@@ -32,6 +32,19 @@ cleanup() {
 }
 
 die() { echo "Error: $*" >&2; exit 1; }
+
+# Check for newer version (non-blocking, silent on failure)
+check_update() {
+    local latest
+    latest="$(curl -sf --max-time 3 \
+        "https://raw.githubusercontent.com/huggingface/hf-agents/main/manifest.json" \
+        | jq -r '.version // empty' 2>/dev/null)" || return 0
+    if [[ -n "$latest" ]] && [[ "$latest" != "$VERSION" ]]; then
+        echo "A new version of hf-agents is available: $latest (current: $VERSION)"
+        echo "  Update with: hf extensions install hf-agents"
+        echo ""
+    fi
+}
 
 is_macos() { [[ "$(uname -s)" == "Darwin" ]]; }
 
@@ -164,9 +177,6 @@ usage() {
     cat <<EOF
 hf-agents $VERSION — local coding agents powered by llmfit + llama.cpp
 
-Install:
-  hf extensions install hf-agents
-
 Usage:
   hf agents fit [args...]                    Hardware detection & model recommendations (llmfit passthrough)
   hf agents run pi [model] [--top N] [args...]  Start llama-server and launch Pi coding agent
@@ -174,8 +184,9 @@ Usage:
   hf agents --version                        Show version
 
 Environment:
-  LLAMA_SERVER_PORT   Port for llama-server (default: 8080)
-  HF_TOKEN            Hugging Face token for gated model downloads
+  LLAMA_SERVER_PORT      Port for llama-server (default: 8080)
+  LLAMA_SERVER_TIMEOUT   Startup timeout in seconds (default: 600)
+  HF_TOKEN               Hugging Face token for gated model downloads
 
 Examples:
   hf agents fit recommend -n 5       # top 5 models for your hardware
@@ -246,20 +257,17 @@ cmd_run_pi() {
         die "Port $PORT is in use but not responding to health checks. Kill the existing process or use LLAMA_SERVER_PORT=<port>."
     else
         # Step 3 & 4: Get model — either from arg or interactive selection
+        local model_ctx=""
         if [[ -z "$hf_repo" ]]; then
             echo "Detecting hardware and fetching model recommendations..."
             local recommend_json
-            # Fetch enough candidates so GGUF filtering can fill --top N
-            # Note: --runtime llamacpp returns 0 models on Apple Silicon (llmfit
-            # prefers MLX there), so we use --runtime any and filter for gguf_sources.
-            # When best_quant is an MLX quant, we map to the GGUF equivalent
-            # (mlx-8bit→Q8_0, mlx-4bit→Q4_K_M, mlx-3bit→Q3_K_M).
             local fetch_n=$(( top_n > 30 ? top_n * 4 : 100 ))
-            recommend_json="$(llmfit recommend --json -n "$fetch_n")" || die "llmfit recommend failed."
+            recommend_json="$(llmfit recommend --json --use-case coding --force-runtime llamacpp -n "$fetch_n")" \
+                || die "llmfit recommend failed."
 
-            # Filter to GGUF models and deduplicate by model name (keep highest score)
-            local gguf_all
-            gguf_all="$(echo "$recommend_json" | jq '
+            # Filter to models with GGUF sources and deduplicate by model name (keep highest score)
+            local models_all
+            models_all="$(echo "$recommend_json" | jq '
                 [.models[] | select(.gguf_sources | length > 0)]
                 | group_by(.name | split("/")[1])
                 | map(sort_by(-.score)[0])
@@ -269,20 +277,11 @@ cmd_run_pi() {
             if [[ "$top_n" -eq 0 ]]; then
                 # Auto-pick: take the first GGUF-compatible model
                 local best
-                best="$(echo "$gguf_all" | jq '.[0] //empty')"
+                best="$(echo "$models_all" | jq '.[0] //empty')"
                 [[ -n "$best" ]] || die "No GGUF-compatible models found for your hardware."
 
-                hf_repo="$(echo "$best" | jq -r '
-                    .gguf_sources[0].repo as $repo |
-                    (.best_quant |
-                        if test("^mlx-8bit"; "i") then "Q8_0"
-                        elif test("^mlx-4bit"; "i") then "Q4_K_M"
-                        elif test("^mlx-3bit"; "i") then "Q3_K_M"
-                        elif test("^mlx"; "i") then "Q4_K_M"
-                        else . end
-                    ) as $quant |
-                    "\($repo):\($quant)"
-                ')"
+                hf_repo="$(echo "$best" | jq -r '"\(.gguf_sources[0].repo):\(.best_quant)"')"
+                model_ctx="$(echo "$best" | jq -r '.context_length // empty')"
                 local model_name model_score
                 model_name="$(echo "$best" | jq -r '.name')"
                 model_score="$(echo "$best" | jq -r '.score')"
@@ -290,29 +289,41 @@ cmd_run_pi() {
                 echo "  → $hf_repo"
             else
                 # Interactive: show top N in fzf picker
-                local gguf_models
-                gguf_models="$(echo "$gguf_all" | jq --argjson n "$top_n" '.[:$n]')"
+                local top_models
+                top_models="$(echo "$models_all" | jq --argjson n "$top_n" '.[:$n]')"
 
                 local count
-                count="$(echo "$gguf_models" | jq 'length')"
+                count="$(echo "$top_models" | jq 'length')"
                 [[ "$count" -gt 0 ]] || die "No GGUF-compatible models found for your hardware."
 
                 # Build lines: repo:quant \t name \t quant \t params \t tps \t score
                 local fzf_input
-                fzf_input="$(echo "$gguf_models" | jq -r '
+                fzf_input="$(echo "$top_models" | jq -r '
                     .[] |
-                    .gguf_sources[0].repo as $repo |
-                    (.best_quant |
-                        if test("^mlx-8bit"; "i") then "Q8_0"
-                        elif test("^mlx-4bit"; "i") then "Q4_K_M"
-                        elif test("^mlx-3bit"; "i") then "Q3_K_M"
-                        elif test("^mlx"; "i") then "Q4_K_M"
-                        else . end
-                    ) as $quant |
-                    "\($repo):\($quant)\t\(.name)\t\($quant)\t\(.parameter_count)\t\(.estimated_tps) tok/s\tscore: \(.score)"
+                    "\(.gguf_sources[0].repo):\(.best_quant)\t\(.name)\t\(.best_quant)\t\(.parameter_count)\t\(.estimated_tps) tok/s\tscore: \(.score)"
                 ' | awk -F'\t' '{
                     printf "%s\t%-50s  %-10s  %-12s  %-12s  %s\n", $1, $2, $3, $4, $5, $6
                 }')"
+
+                # Detect clipboard command for ctrl-y copy
+                local clip_cmd=""
+                if is_macos; then
+                    clip_cmd="pbcopy"
+                elif command -v xclip >/dev/null 2>&1; then
+                    clip_cmd="xclip -selection clipboard"
+                elif command -v xsel >/dev/null 2>&1; then
+                    clip_cmd="xsel --clipboard"
+                elif command -v wl-copy >/dev/null 2>&1; then
+                    clip_cmd="wl-copy"
+                fi
+
+                local fzf_header
+                fzf_header="$(printf '%-50s  %-10s  %-12s  %-12s  %s' 'Name' 'Quant' 'Params' 'Speed' 'Score')"
+                local fzf_bind_args=()
+                if [[ -n "$clip_cmd" ]]; then
+                    fzf_header+=$'\n  space: copy model ID to clipboard'
+                    fzf_bind_args=(--bind "space:execute-silent(echo -n {1} | $clip_cmd)+change-header:Copied! Press enter to select.")
+                fi
 
                 local selection
                 selection="$(echo "$fzf_input" | fzf \
@@ -321,7 +332,8 @@ cmd_run_pi() {
                     --reverse \
                     --delimiter=$'\t' \
                     --with-nth=2.. \
-                    --header="$(printf '%-50s  %-10s  %-12s  %-12s  %s' 'Name' 'Quant' 'Params' 'Speed' 'Score')")" \
+                    --header="$fzf_header" \
+                    "${fzf_bind_args[@]}")" \
                     || die "No model selected."
 
                 hf_repo="$(echo "$selection" | cut -f1)"
@@ -330,6 +342,12 @@ cmd_run_pi() {
                 model_score="$(echo "$selection" | awk -F'\t' '{print $6}' | xargs)"
                 echo "Selected: $model_name ($model_score)"
                 echo "  → $hf_repo"
+
+                # Look up context_length from the selected model
+                local selected_repo
+                selected_repo="$(echo "$hf_repo" | cut -d: -f1)"
+                model_ctx="$(echo "$top_models" | jq -r --arg repo "$selected_repo" \
+                    '[.[] | select(.gguf_sources[0].repo == $repo)][0].context_length // empty')"
             fi
         else
             echo "Using model: $hf_repo"
@@ -344,8 +362,7 @@ cmd_run_pi() {
         LLAMA_PID=$!
 
         # Health-check loop with progress indicator
-        # 600s timeout to allow for first-run model downloads
-        local timeout=600
+        local timeout="${LLAMA_SERVER_TIMEOUT:-600}"
         local elapsed=0
         local spinner=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
         local spin_i=0
@@ -487,6 +504,15 @@ cmd_run_pi() {
         model_id="local-model"
     fi
 
+    # Build model entry — include contextWindow only if available from llmfit
+    local model_entry
+    if [[ -n "$model_ctx" ]]; then
+        model_entry="$(jq -n --arg id "$model_id" --argjson ctx "$model_ctx" \
+            '{ id: $id, contextWindow: $ctx }')"
+    else
+        model_entry="$(jq -n --arg id "$model_id" '{ id: $id }')"
+    fi
+
     cat > "$PI_MODELS_JSON" <<PIEOF
 {
   "providers": {
@@ -495,9 +521,7 @@ cmd_run_pi() {
       "api": "openai-completions",
       "apiKey": "none",
       "models": [
-        {
-          "id": "$model_id"
-        }
+        $model_entry
       ]
     }
   }
@@ -511,6 +535,8 @@ PIEOF
 }
 
 # ── Main routing ─────────────────────────────────────────────────────────────
+
+check_update
 
 case "${1:-}" in
     fit)
