@@ -33,13 +33,27 @@ cleanup() {
 
 die() { echo "Error: $*" >&2; exit 1; }
 
+# Version comparison: returns 0 if $1 >= $2
+version_gte() {
+    local v1="$1" v2="$2"
+    local IFS='.'
+    local i ver1=($v1) ver2=($v2)
+    for i in 0 1 2; do
+        local n1="${ver1[$i]:-0}" n2="${ver2[$i]:-0}"
+        [[ $n1 -gt $n2 ]] && return 0
+        [[ $n1 -lt $n2 ]] && return 1
+    done
+    return 0
+}
+
 # Check for newer version (non-blocking, silent on failure)
 check_update() {
     local latest
     latest="$(curl -sf --max-time 3 \
         "https://raw.githubusercontent.com/huggingface/hf-agents/main/manifest.json" \
         | jq -r '.version // empty' 2>/dev/null)" || return 0
-    if [[ -n "$latest" ]] && [[ "$latest" != "$VERSION" ]]; then
+    # Only show upgrade message if latest version is actually newer than current
+    if [[ -n "$latest" ]] && ! version_gte "$VERSION" "$latest"; then
         echo "A new version of hf-agents is available: $latest (current: $VERSION)"
         echo "  Update with: hf extensions install hf-agents"
         echo ""
