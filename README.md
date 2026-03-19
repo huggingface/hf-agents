@@ -17,7 +17,7 @@ hf agents run pi
 
 That's it. The script auto-detects your hardware, picks the best coding model, downloads it, starts a local server, and drops you into a coding agent.
 
-## What happens when you run `hf agents run pi`
+## How it works
 
 1. **Installs missing dependencies** — auto-installs via Homebrew on macOS; prints install hints on Linux
 2. **Detects your hardware** via llmfit (RAM, VRAM, CPU/GPU)
