@@ -7,8 +7,11 @@ Uses [llmfit](https://github.com/AlexsJones/llmfit) for hardware detection, [lla
 ## Quickstart
 
 ```bash
+# install the HF CLI
 curl -LsSf https://hf.co/cli/install.sh | bash
+# install the hf-agents extension
 hf extensions install hf-agents
+# run a local coding agent
 hf agents run pi
 ```
 
