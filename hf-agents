@@ -126,19 +126,15 @@ ensure_dep() {
     command -v "$cmd" >/dev/null 2>&1 && return
 
     if is_macos; then
-        echo "'$cmd' not found. Installing..."
         case "$cmd" in
             curl)
-                die "'curl' is required but not found in PATH. Please install it manually." ;;
+                die "'curl' is required. Please install it: brew install curl" ;;
             jq|fzf)
-                ensure_brew
-                brew install "$cmd" || die "Failed to install '$cmd' via Homebrew." ;;
+                die "'$cmd' is required. Please install it: brew install $cmd" ;;
             llama-server)
-                ensure_brew
-                brew install llama.cpp || die "Failed to install llama.cpp via Homebrew." ;;
+                die "'llama-server' is required. Please install it: brew install llama.cpp" ;;
             npm)
-                ensure_brew
-                brew install node || die "Failed to install node via Homebrew." ;;
+                die "'npm' is required. Please install it: brew install node" ;;
             *)
                 die "'$cmd' is required but not found in PATH." ;;
         esac
