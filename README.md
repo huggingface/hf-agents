@@ -1,6 +1,6 @@
 # hf-agents
 
-Run a local AI coding agent in one command — detects your hardware, picks the right model, just works.
+A HF CLI extension that uses [llmfit](https://github.com/AlexsJones/llmfit) to detect your hardware and recommend models you can actually run, then spins up a local [llama.cpp](https://github.com/ggml-org/llama.cpp) server with the most suited model and launches a coding agent with [Pi](https://github.com/badlogic/pi-mono).
 
 ## Quickstart
 
@@ -53,4 +53,4 @@ Any flags starting with `-` (other than `--top`) are forwarded to Pi.
 
 ---
 
-Apache 2.0 · Built on [llmfit](https://github.com/AlexsJones/llmfit), [llama.cpp](https://github.com/ggml-org/llama.cpp), and [Pi](https://github.com/badlogic/pi-mono)
+Apache 2.0
