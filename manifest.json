@@ -2,7 +2,7 @@
     "name": "hf-agents",
     "description": "Run local coding agents powered by llmfit hardware detection and llama.cpp",
     "entrypoint": "hf-agents",
-    "version": "0.1.0",
+    "version": "0.2.1",
     "license": "Apache-2.0",
     "requires": [
       "bash",
@@ -15,6 +15,7 @@
     ],
     "env": {
       "LLAMA_SERVER_PORT": "Port for llama-server (default: 8080)",
+      "LLAMA_SERVER_TIMEOUT": "Startup timeout in seconds (default: 600)",
       "HF_TOKEN": "Hugging Face token for gated model downloads"
     }
   }

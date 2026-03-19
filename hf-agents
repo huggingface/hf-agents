@@ -2,7 +2,7 @@
 # hf-agents — bridge llmfit hardware detection and Pi coding agent via llama.cpp
 set -euo pipefail
 
-VERSION="0.2.0"
+VERSION="0.2.1"
 PORT="${LLAMA_SERVER_PORT:-8080}"
 LLAMA_LOG="/tmp/hf-agents-llama-server.log"
 PI_MODELS_DIR="$HOME/.pi/agent"
@@ -84,6 +84,31 @@ linux_install_hint() {
 # Ensure a dependency is available, installing it if missing
 ensure_dep() {
     local cmd="$1"
+
+    # llmfit: always update to latest version
+    if [[ "$cmd" == "llmfit" ]]; then
+        if is_macos; then
+            ensure_brew
+            if brew list llmfit &>/dev/null; then
+                echo "Updating llmfit..."
+                brew upgrade llmfit 2>/dev/null || true
+            else
+                echo "Installing llmfit..."
+                brew install llmfit || die "Failed to install llmfit via Homebrew."
+            fi
+        else
+            if command -v llmfit >/dev/null 2>&1; then
+                echo "Updating llmfit..."
+            else
+                echo "Installing llmfit..."
+            fi
+            curl -fsSL https://llmfit.axjns.dev/install.sh | sh \
+                || die "Failed to install/update llmfit."
+        fi
+        command -v llmfit >/dev/null 2>&1 || die "'llmfit' installed but not found in PATH."
+        return
+    fi
+
     command -v "$cmd" >/dev/null 2>&1 && return
 
     if is_macos; then
@@ -94,9 +119,6 @@ ensure_dep() {
             jq|fzf)
                 ensure_brew
                 brew install "$cmd" || die "Failed to install '$cmd' via Homebrew." ;;
-            llmfit)
-                curl -fsSL https://llmfit.axjns.dev/install.sh | sh \
-                    || die "Failed to install llmfit." ;;
             llama-server)
                 ensure_brew
                 brew install llama.cpp || die "Failed to install llama.cpp via Homebrew." ;;
@@ -115,10 +137,6 @@ $(linux_install_hint curl)" ;;
             jq|fzf)
                 die "'$cmd' is required. Please install it:
 $(linux_install_hint "$cmd")" ;;
-            llmfit)
-                echo "'llmfit' not found. Installing..."
-                curl -fsSL https://llmfit.axjns.dev/install.sh | sh \
-                    || die "Failed to install llmfit." ;;
             llama-server)
                 die "'llama-server' is required. Please install llama.cpp:
   https://github.com/ggml-org/llama.cpp/blob/master/docs/install.md" ;;
