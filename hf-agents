@@ -54,8 +54,8 @@ check_update() {
         | jq -r '.version // empty' 2>/dev/null)" || return 0
     # Only show upgrade message if latest version is actually newer than current
     if [[ -n "$latest" ]] && ! version_gte "$VERSION" "$latest"; then
-        echo "A new version of hf-agents is available: $latest (current: $VERSION)"
-        echo "  Update with: hf extensions install hf-agents"
+        echo -e "\033[33mA new version of hf-agents is available: $latest (current: $VERSION)\033[0m"
+        echo -e "  Update with: \033[1mhf extensions install hf-agents --force\033[0m"
         echo ""
     fi
 }
