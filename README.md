@@ -1,51 +1,56 @@
-# hf-agents : `hf` CLI extension to detect the best model/quant for a user's hardware and then spins up a local coding agent
+# hf-agents
 
-hf-agents is a HF CLI extension that uses [llmfit](https://github.com/AlexsJones/llmfit) to detect the user's hardware and recommend models they can actually run, then spins up a local [llama.cpp](https://github.com/ggml-org/llama.cpp) server with the most suited model and launches a coding agent with [Pi](https://github.com/badlogic/pi-mono).
+A HF CLI extension that uses [llmfit](https://github.com/AlexsJones/llmfit) to detect your hardware and recommend models you can actually run, then spins up a local [llama.cpp](https://github.com/ggml-org/llama.cpp) server with the most suited model and launches a coding agent with [Pi](https://github.com/badlogic/pi-mono).
 
-Go from "what can my machine run?" to "running a local coding agent" in one command.
-
-## Requirements & References
-- How to create a HF CLI extension guide: https://huggingface.co/docs/huggingface_hub/en/guides/cli-extensions
-- [llmfit](https://github.com/AlexsJones/llmfit) : hardware detection & model recommendations
-- [llama.cpp](https://github.com/ggml-org/llama.cpp) : `llama-server` for local inference
-- [Pi](https://github.com/badlogic/pi-mono) : coding agent
-- `jq`, `fzf`, `curl`
-
-## Installation
+## Quickstart
 
 ```bash
+# install the HF CLI
 curl -LsSf https://hf.co/cli/install.sh | bash
+# install the hf-agents extension
 hf extensions install hf-agents
+# run a local coding agent
+hf agents run pi
 ```
+
+First run downloads a model and starts a server — takes a few minutes depending on your connection. Subsequent runs reuse the cached model and start in seconds. On macOS, dependencies auto-install. On Linux, the script tells you what to install.
 
 ## Usage
 
-### Hardware detection & model recommendations
-
-Passes through to `llmfit` — all llmfit subcommands work:
-
 ```bash
-hf agents fit recommend -n 5      # top 5 models for your hardware
-hf agents fit system              # show detected hardware
-hf agents fit search "qwen"       # search models
-hf agents fit recommend --use-case coding --min-fit good
+hf agents run pi                                        # auto-pick best model
+hf agents run pi --top 5                                # interactive model picker
+hf agents run pi unsloth/Qwen3-Coder-Next-GGUF:q4_k_m  # use a specific model
+hf agents run pi --print "explain this codebase"        # pass args through to Pi
+
+hf agents fit system                                    # show your hardware
+hf agents fit recommend -n 5                            # top 5 recommended models
 ```
 
-### Run a local coding agent
+Any flags starting with `-` (other than `--top`) are forwarded to Pi.
 
-Detects your hardware, lets you pick a model, starts llama-server, and launches Pi:
+## Configuration
 
-```bash
-hf agents run pi                  # interactive model selection + coding agent
-hf agents run pi --print "hello"  # non-interactive mode, forward args to Pi
-```
+<details>
+<summary>Environment variables & operational notes</summary>
 
-If llama-server is already running on the target port, it reuses it and skips model selection.
+**Environment variables**
 
-## Environment Variables
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `LLAMA_SERVER_PORT` | `8080` | Port for llama-server |
-| `HF_TOKEN` | *(from `hf` CLI)* | For downloading gated models |
+| `LLAMA_SERVER_TIMEOUT` | `600` | Max seconds to wait for server startup |
+| `HF_TOKEN` | *(from `hf auth token`)* | For downloading gated models |
 
+**Good to know**
+
+- **Server reuse**: if llama-server is already running on the target port, it's reused — no model selection or download happens.
+- **Logs**: llama-server output goes to `/tmp/hf-agents-llama-server.log`.
+- **Pi config**: temporarily writes to `~/.pi/agent/models.json` during the session, restores the original on exit.
+- **Press Esc** during server startup to cancel.
+
+</details>
+
+---
+
+Apache 2.0
