@@ -116,7 +116,7 @@ ensure_dep() {
             else
                 echo "Installing llmfit..."
             fi
-            curl -fsSL https://llmfit.axjns.dev/install.sh | sh \
+            curl -fsSL https://llmfit.axjns.dev/install.sh | sh -s -- --local \
                 || die "Failed to install/update llmfit."
         fi
         command -v llmfit >/dev/null 2>&1 || die "'llmfit' installed but not found in PATH."
