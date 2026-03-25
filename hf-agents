@@ -101,6 +101,18 @@ ensure_dep() {
 
     # llmfit: always update to latest version
     if [[ "$cmd" == "llmfit" ]]; then
+        # Detect local install path first, even if extension PATH is minimal.
+        if [[ -x "$HOME/.local/bin/llmfit" ]] && [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+            export PATH="$HOME/.local/bin:$PATH"
+        fi
+        if [[ -x "$HOME/.cargo/bin/llmfit" ]] && [[ ":$PATH:" != *":$HOME/.cargo/bin:"* ]]; then
+            export PATH="$HOME/.cargo/bin:$PATH"
+        fi
+        if command -v llmfit >/dev/null 2>&1; then
+            echo "Using existing llmfit: $(command -v llmfit)"
+            return
+        fi
+
         if is_macos; then
             ensure_brew
             if brew list llmfit &>/dev/null; then
